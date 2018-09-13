@@ -5,6 +5,7 @@
 #include <libopencm3/stm32/rcc.h>
 #include <libopencm3/stm32/gpio.h>
 #include <libopencm3/stm32/usart.h>
+#include <libopencm3/stm32/spi.h>
 #include <libopencm3/cm3/systick.h>
 
 extern "C" {
@@ -64,6 +65,58 @@ static void usart_setup() {
     setbuf(stdout, NULL);
 }
 
+void spi_setup() {
+    // Enable clock for SPI2 peripheral
+    rcc_periph_clock_enable(RCC_SPI2);
+
+    // Configure GPIOB, AF0: SCK = PB13, MISO = PB14, MOSI = PB15
+    gpio_mode_setup(GPIOB, GPIO_MODE_AF, GPIO_PUPD_NONE, GPIO13 | GPIO14 | GPIO15);
+    gpio_set_af(GPIOB, GPIO_AF0, GPIO13 | GPIO14 | GPIO15);
+
+    // We will be manually controlling the SS pin here, so set it as a normal output
+    gpio_mode_setup(GPIOB, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, GPIO12);
+
+    // SS is active low, so pull it high for now
+    gpio_set(GPIOB, GPIO12);
+
+    // Reset our peripheral
+    spi_reset(SPI2);
+
+    // Set main SPI settings:
+    // - The datasheet for the 74HC595 specifies a max frequency at 4.5V of
+    //   25MHz, but since we're running at 3.3V we'll instead use a 12MHz
+    //   clock, or 1/4 of our main clock speed.
+    // - Set the clock polarity to be zero at idle
+    // - Set the clock phase to trigger on the rising edge, as per datasheet
+    // - Send the most significant bit (MSB) first
+    spi_init_master(
+        SPI2,
+        SPI_CR1_BAUDRATE_FPCLK_DIV_4,
+        SPI_CR1_CPOL_CLK_TO_0_WHEN_IDLE,
+        SPI_CR1_CPHA_CLK_TRANSITION_1,
+        SPI_CR1_MSBFIRST
+    );
+
+    // Since we are manually managing the SS line, we need to move it to
+    // software control here.
+    spi_enable_software_slave_management(SPI2);
+
+    // We also need to set the value of NSS high, so that our SPI peripheral
+    // doesn't think it is itself in slave mode.
+    spi_set_nss_high(SPI2);
+
+    // The terminology around directionality can be a little confusing here -
+    // unidirectional mode means that this is the only chip initiating
+    // transfers, not that it will ignore any incoming data on the MISO pin.
+    // Enabling duplex is required to read data back however.
+    spi_set_unidirectional_mode(SPI2);
+
+    // We're using 8 bit, not 16 bit, transfers
+    spi_set_data_size(SPI2, SPI_CR2_DS_8BIT);
+
+    // Enable the peripheral
+    spi_enable(SPI2);
+}
 static void systick_setup() {
     // Set the systick clock source to our main clock
     systick_set_clocksource(STK_CSR_CLKSOURCE_AHB);
@@ -135,10 +188,30 @@ int _write(int file, const char *ptr, ssize_t len) {
     return i;
 }
 
+void spi_transfer(uint8_t tx_count, uint8_t *tx_data) {
+    // Pull CS low to select target
+    gpio_clear(GPIOB, GPIO12);
+
+    for (uint8_t i = 0; i < tx_count; i++) {
+        // Wait for the peripheral to become ready to transmit
+        while (!(SPI_SR(SPI2) & SPI_SR_TXE));
+
+        // Place the next data in the data register for transmission
+        SPI_DR8(SPI2) = tx_data[i];
+    }
+
+    // Block return until the SPI periperhal has finished sending
+    while (SPI_SR(SPI2) & SPI_SR_BSY);
+
+    // Bring the SS pin high again
+    gpio_set(GPIOB, GPIO12);
+}
+
 int main() {
     clock_setup();
     usart_setup();
     systick_setup();
+    spi_setup();
     gpio_setup();
 
     // Toggle the LED on and off forever
