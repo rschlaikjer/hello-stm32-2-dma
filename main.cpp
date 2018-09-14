@@ -36,12 +36,12 @@ static void usart_setup() {
     // mode to GPIO_MODE_AF (alternate function). We also do not need a pullup
     // or pulldown resistor on this pin, since the peripheral will handle
     // keeping the line high when nothing is being transmitted.
-    gpio_mode_setup(GPIOA, GPIO_MODE_AF, GPIO_PUPD_NONE, GPIO9);
+    gpio_mode_setup(GPIOB, GPIO_MODE_AF, GPIO_PUPD_NONE, GPIO6);
     // Now that we have put the pin into alternate function mode, we need to
     // select which alternate function to use. PA9 can be used for several
     // alternate functions - Timer 15, USART1 TX, Timer 1, and on some devices
     // I2C. Here, we want alternate function 1 (USART1_TX)
-    gpio_set_af(GPIOA, GPIO_AF1, GPIO9);
+    gpio_set_af(GPIOB, GPIO_AF0, GPIO6);
     // Now that the pins are configured, we can configure the USART itself.
     // First, let's set the baud rate at 115200
     usart_set_baudrate(USART1, 115200);
