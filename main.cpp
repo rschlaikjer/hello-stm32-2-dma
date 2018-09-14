@@ -157,11 +157,6 @@ void delay(uint64_t duration) {
     while (millis() < until);
 }
 
-static void gpio_setup() {
-    // Our test LED is connected to Port A pin 11, so let's set it as output
-    gpio_mode_setup(GPIOA, GPIO_MODE_OUTPUT, GPIO_PUPD_NONE, GPIO11);
-}
-
 int _write(int file, const char *ptr, ssize_t len) {
     // If the target file isn't stdout/stderr, then return an error
     // since we don't _actually_ support file handles
@@ -286,7 +281,6 @@ int main() {
     usart_setup();
     systick_setup();
     spi_setup();
-    gpio_setup();
     dma_init();
 
     uint8_t data[1024];
