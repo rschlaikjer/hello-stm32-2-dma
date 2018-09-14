@@ -4,8 +4,10 @@
 
 #include <libopencm3/stm32/rcc.h>
 #include <libopencm3/stm32/gpio.h>
+#include <libopencm3/stm32/dma.h>
 #include <libopencm3/stm32/usart.h>
 #include <libopencm3/stm32/spi.h>
+#include <libopencm3/cm3/nvic.h>
 #include <libopencm3/cm3/systick.h>
 
 extern "C" {
@@ -207,22 +209,94 @@ void spi_transfer(uint8_t tx_count, uint8_t *tx_data) {
     gpio_set(GPIOB, GPIO12);
 }
 
+void dma_init() {
+    // Enable DMA clock
+    rcc_periph_clock_enable(RCC_DMA1);
+    // In order to use SPI2_TX, we need DMA 1 Channel 5
+    dma_channel_reset(DMA1, DMA_CHANNEL5);
+    // SPI2 data register as output
+    dma_set_peripheral_address(DMA1, DMA_CHANNEL5, (uint32_t)&SPI2_DR);
+    // We will be using system memory as the source data
+    dma_set_read_from_memory(DMA1, DMA_CHANNEL5);
+    // Memory increment mode needs to be turned on, so that if we're sending
+    // multiple bytes the DMA controller actually sends a series of bytes,
+    // instead of the same byte multiple times.
+    dma_enable_memory_increment_mode(DMA1, DMA_CHANNEL5);
+    // Contrarily, the peripheral does not need to be incremented - the SPI
+    // data register doesn't move around as we write to it.
+    dma_disable_peripheral_increment_mode(DMA1, DMA_CHANNEL5);
+    // We want to use 8 bit transfers
+    dma_set_peripheral_size(DMA1, DMA_CHANNEL5, DMA_CCR_PSIZE_8BIT);
+    dma_set_memory_size(DMA1, DMA_CHANNEL5, DMA_CCR_MSIZE_8BIT);
+    // We don't have any other DMA transfers going, but if we did we can use
+    // priorities to try to ensure time-critical transfers are not interrupted
+    // by others. In this case, it is alone.
+    dma_set_priority(DMA1, DMA_CHANNEL5, DMA_CCR_PL_LOW);
+    // Since we need to pull the register clock high after the transfer is
+    // complete, enable transfer complete interrupts.
+    dma_enable_transfer_complete_interrupt(DMA1, DMA_CHANNEL5);
+    // We also need to enable the relevant interrupt in the interrupt
+    // controller, and assign it a priority.
+    nvic_set_priority(NVIC_DMA1_CHANNEL4_5_IRQ, 0);
+    nvic_enable_irq(NVIC_DMA1_CHANNEL4_5_IRQ);
+}
+
+void dma_start(void *data, size_t data_size) {
+    // Note - manipulating the memory address/size of the DMA controller cannot
+    // be done while the channel is enabled. Ensure any previous transfer has
+    // completed and the channel is disabled before you start another transfer.
+    // Tell the DMA controller to start reading memory data from this address
+    dma_set_memory_address(DMA1, DMA_CHANNEL5, (uint32_t)data);
+    // Configure the number of bytes to transfer
+    dma_set_number_of_data(DMA1, DMA_CHANNEL5, data_size);
+    // Enable the DMA channel.
+    dma_enable_channel(DMA1, DMA_CHANNEL5);
+
+    // Since we're manually controlling our register clock, move it low now
+    gpio_clear(GPIOB, GPIO12);
+
+    // Finally, enable SPI DMA transmit. This call is what actually starts the
+    // DMA transfer.
+    spi_enable_tx_dma(SPI2);
+}
+
+void dma1_channel4_5_isr() {
+    // Check that we got triggered because the transfer is complete, by
+    // checking the Transfer Complete Interrupt Flag
+    if (dma_get_interrupt_flag(DMA1, DMA_CHANNEL5, DMA_TCIF)) {
+        // If that is why we're here, clear the flag for next time
+        dma_clear_interrupt_flags(DMA1, DMA_CHANNEL5, DMA_TCIF);
+
+        // Like the non-dma version, we don't want to latch the register clock
+        // until the transfer is actually complete, so wait til the busy flag
+        // is clear
+        while (SPI_SR(SPI2) & SPI_SR_BSY);
+
+        // Turn our DMA channel back off, in preparation of the next transfer
+        spi_disable_tx_dma(SPI2);
+        dma_disable_channel(DMA1, DMA_CHANNEL5);
+
+        // Bring the register clock high to latch the transferred data
+        gpio_set(GPIOB, GPIO12);
+    }
+}
+
 int main() {
     clock_setup();
     usart_setup();
     systick_setup();
     spi_setup();
     gpio_setup();
+    dma_init();
 
-    // Toggle the LED on and off forever
-    while (1) {
-        printf("[%lld] LED on\n", millis());
-        gpio_set(GPIOA, GPIO11);
-        delay(1000);
-        printf("[%lld] LED off\n", millis());
-        gpio_clear(GPIOA, GPIO11);
-        delay(1000);
+    uint8_t data[1024];
+    for (int i = 0; i < 1024; i++) {
+        data[i] = i;
     }
+    dma_start(data, 1024);
+    printf("Concurrent DMA and USART!\n");
+
+    while (1){}
 
     return 0;
 }
